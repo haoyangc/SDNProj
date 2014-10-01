@@ -497,13 +497,13 @@ public class Hw1Switch
 
         // CS6998: Do works here to implement super firewall
         //  Hint: You may detect Elephant Flow here.
-        Long byteCount = flowRemovedMessage.getByteCount();
-        Integer durationInSec = flowRemovedMessage.getDurationSeconds();
-        Double bandwidth = (double) byteCount/durationInSec;
-        if (bandwidth > ELEPHANT_FLOW_BAND_WIDTH)
-            addElephantFlow(sw, sourceMac, destMac);
+        //Long byteCount = flowRemovedMessage.getByteCount();
+        //Integer durationInSec = flowRemovedMessage.getDurationSeconds();
+        //Double bandwidth = (double) byteCount/durationInSec;
+        //if (bandwidth > ELEPHANT_FLOW_BAND_WIDTH)
+        //    addElephantFlow(sw, sourceMac, destMac);
 
-        checkElephantFlowLimit(sw);
+        //checkElephantFlowLimit(sw);
         
         return Command.CONTINUE;
     }
