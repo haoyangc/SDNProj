@@ -31,7 +31,10 @@
 
 package edu.columbia.cs6998.sdn.hw1;
 
+import java.util.Timer;
+import java.util.TimerTask;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -51,7 +54,9 @@ import net.floodlightcontroller.core.module.FloodlightModuleContext;
 import net.floodlightcontroller.core.module.FloodlightModuleException;
 import net.floodlightcontroller.core.module.IFloodlightModule;
 import net.floodlightcontroller.core.module.IFloodlightService;
+import net.floodlightcontroller.packet.Data;
 import net.floodlightcontroller.packet.Ethernet;
+import net.floodlightcontroller.packet.IPv4;
 
 import org.openflow.protocol.OFError;
 import org.openflow.protocol.OFFlowMod;
@@ -100,7 +105,7 @@ public class Hw1Switch
     
     // more flow-mod defaults 
     protected static final short IDLE_TIMEOUT_DEFAULT = 10;
-    protected static final short HARD_TIMEOUT_DEFAULT = 1;
+    protected static final short HARD_TIMEOUT_DEFAULT = 100;
     protected static final short PRIORITY_DEFAULT = 100;
     
     // for managing our map sizes
@@ -409,6 +414,7 @@ public class Hw1Switch
         }
     }
     
+
     /**
      * Processes a OFPacketIn message. If the switch has learned the MAC to port mapping
      * for the pair it will write a FlowMod for. If the mapping has not been learned the 
@@ -456,25 +462,207 @@ public class Hw1Switch
         // Now output flow-mod and/or packet
         // CS6998: Fill out the following ???? to obtain outPort
         Short outPort = getFromPortMap(sw, destMac);
-        if (outPort == null) {
-            // If we haven't learned the port for the dest MAC, flood it
-            // CS6998: Fill out the following ????
-            this.writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
-        } else if (outPort == match.getInputPort()) {
-            log.trace("ignoring packet that arrived on same port as learned destination:"
-                    + " switch {} dest MAC {} port {}",
-                    new Object[]{ sw, HexString.toHexString(destMac), outPort });
+        
+        log.info("protocol:" + match.getNetworkProtocol());
+        if (match.getNetworkProtocol() != (byte)0xfd) {
+	        if (outPort == null) {
+	            // If we haven't learned the port for the dest MAC, flood it
+	            // CS6998: Fill out the following ????
+	            this.writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
+	        } else if (outPort == match.getInputPort()) {
+	            log.trace("ignoring packet that arrived on same port as learned destination:"
+	                    + " switch {} dest MAC {} port {}",
+	                    new Object[]{ sw, HexString.toHexString(destMac), outPort });
+	        } else {
+	            // Add flow table entry matching source MAC, dest MAC and input port
+	            // that sends to the port we previously learned for the dest MAC.
+	            match.setWildcards(((Integer)sw.getAttribute(IOFSwitch.PROP_FASTWILDCARDS)).intValue()
+	                    & ~OFMatch.OFPFW_IN_PORT
+	                    & ~OFMatch.OFPFW_DL_SRC & ~OFMatch.OFPFW_DL_DST
+	                    & ~OFMatch.OFPFW_NW_SRC_MASK & ~OFMatch.OFPFW_NW_DST_MASK);
+	            // CS6998: Fill out the following ????
+	            this.writeFlowMod(sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort);
+	            
+	            // Final Proj
+                Timer timer = new Timer();
+                //timer.schedule(new MyTimerTask(sw, match, outPort, pi), 1000);
+                for (int i=0; i<10; i++) {
+                    IPv4 ipPacket = genIpPacket(sw, match);
+                    writePacketOut(sw, ipPacket, outPort, 
+                            match.getDataLayerSource(), match.getDataLayerDestination(),
+                            pi);
+                }
+	        }
         } else {
-            // Add flow table entry matching source MAC, dest MAC and input port
-            // that sends to the port we previously learned for the dest MAC.
-            match.setWildcards(((Integer)sw.getAttribute(IOFSwitch.PROP_FASTWILDCARDS)).intValue()
-                    & ~OFMatch.OFPFW_IN_PORT
-                    & ~OFMatch.OFPFW_DL_SRC & ~OFMatch.OFPFW_DL_DST
-                    & ~OFMatch.OFPFW_NW_SRC_MASK & ~OFMatch.OFPFW_NW_DST_MASK);
-            // CS6998: Fill out the following ????
-            this.writeFlowMod(sw, OFFlowMod.OFPFC_ADD, pi.getBufferId(), match, outPort);
+        	log.info("===================OWN PACKET==================");
+        	if (outPort != null) {
+        		Ethernet packet = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
+        		IPv4 ipPacket = (IPv4) packet.getPayload();
+        		byte[] payload = ((Data) ipPacket.getPayload()).getData();
+        		byte[] idLoad = new byte[8];
+        		byte[] timeLoad = new byte[8];
+        		System.arraycopy(payload, 0, idLoad, 0, 8);
+        		System.arraycopy(payload, 8, timeLoad, 0, 8);
+        		
+        		long id = ByteBuffer.wrap(idLoad).getLong();
+        		long time = ByteBuffer.wrap(timeLoad).getLong();
+        		
+        		log.info("currentId=" + sw.getStringId() + "id=" + id + ", time=" + (System.currentTimeMillis() - time));
+        	}
         }
         return Command.CONTINUE;
+    }
+        private IPv4 genIpPacket(IOFSwitch sw, OFMatch match) {
+        	//https://github.com/wallnerryan/floodlight/blob/master/src/main/java/net/floodlightcontroller/counter/CounterStore.java
+        	IPv4 ip_pck = new IPv4();
+        	ip_pck.setProtocol((byte) 0xfd); //protocol 253, for experimental purpose
+        	ip_pck.setSourceAddress(match.getNetworkSource()); //TODO: fix this
+        	ip_pck.setDestinationAddress("224.0.0.255"); //match.getNetworkDestination()); //"224.0.0.255");
+        	byte [] idData = longToBytes(sw.getId());
+        	byte [] timeData = longToBytes(System.currentTimeMillis());
+        	byte [] data = new byte[idData.length + timeData.length];
+        	System.arraycopy(idData, 0, data, 0, idData.length);
+        	System.arraycopy(timeData, 0, data, idData.length, timeData.length);
+        	ip_pck.setPayload(new Data (data));
+        	
+        	return ip_pck;
+        }
+    class MyTimerTask extends TimerTask  {
+    	IOFSwitch sw;
+    	OFMatch match;
+    	Short outPort;
+    	OFPacketIn pi;
+        public MyTimerTask(IOFSwitch sw, OFMatch match, Short outPort,OFPacketIn pi) {
+            this.sw = sw;
+            this.match = match;
+            this.outPort = outPort;
+            this.pi = pi;
+        }
+        private IPv4 genIpPacket(IOFSwitch sw, OFMatch match) {
+        	//https://github.com/wallnerryan/floodlight/blob/master/src/main/java/net/floodlightcontroller/counter/CounterStore.java
+        	IPv4 ip_pck = new IPv4();
+        	ip_pck.setProtocol((byte) 0xfd); //protocol 253, for experimental purpose
+        	ip_pck.setSourceAddress(match.getNetworkSource()); //TODO: fix this
+        	ip_pck.setDestinationAddress("224.0.0.255"); //match.getNetworkDestination()); //"224.0.0.255");
+        	byte [] idData = longToBytes(sw.getId());
+        	byte [] timeData = longToBytes(System.currentTimeMillis());
+        	byte [] data = new byte[idData.length + timeData.length];
+        	System.arraycopy(idData, 0, data, 0, idData.length);
+        	System.arraycopy(timeData, 0, data, idData.length, timeData.length);
+        	ip_pck.setPayload(new Data (data));
+        	
+        	return ip_pck;
+        }
+        @Override
+        public void run() {
+            for (int i=0; i<10; i++) {
+                IPv4 ipPacket = genIpPacket(sw, match);
+                writePacketOut(sw, ipPacket, outPort, 
+                        match.getDataLayerSource(), match.getDataLayerDestination(),
+                        pi);
+                //try {
+                //    Thread.sleep(2000);
+                //} catch (Exception e) {
+                //}
+            }
+        }
+   }
+    
+    public byte[] intToBytes( final int i ) {
+        ByteBuffer bb = ByteBuffer.allocate(4); 
+        bb.putInt(i); 
+        return bb.array();
+    }
+    public byte[] longToBytes( final long l ) {
+        ByteBuffer bb = ByteBuffer.allocate(8); 
+        bb.putLong(l); 
+        return bb.array();
+    }
+
+    /*
+     * The datapath_id field uniquely identifies a datapath. The lower 48 bits are
+     * intended for the switch MAC address, while the top 16 bits are up to the implementer
+     */
+    byte [] dpidToEthAddr(long dpid) {
+    	byte [] dpidData = longToBytes(dpid);
+    	byte [] ethAddrData = new byte[6];
+    	System.arraycopy(dpidData, 2, ethAddrData, 0, 6);
+    	return ethAddrData;
+    }
+        /**
+         * @param egressPort The switchport to output the PacketOut.
+         */
+    private void writePacketOut(IOFSwitch sw,
+                                IPv4 ip_pck, 
+                                short egressPort,
+                                byte[] srcMac,
+                                byte[] dstMac,
+                                OFPacketIn packetInMessage
+    		) {
+    	Ethernet eth_packet = new Ethernet();
+    	eth_packet.setEtherType(Ethernet.TYPE_IPv4);
+    	eth_packet.setSourceMACAddress(srcMac); //dpid => ethAddress
+    	eth_packet.setDestinationMACAddress(dstMac);
+    	eth_packet.setPayload(ip_pck);
+    	
+    	
+        OFPacketOut packetOutMessage = (OFPacketOut) floodlightProvider.getOFMessageFactory().getMessage(OFType.PACKET_OUT);
+        short packetOutLength = (short) OFPacketOut.MINIMUM_LENGTH; // starting length
+
+        // Set buffer_id, in_port, actions_len
+        //packetOutMessage.setBufferId(packetInMessage.getBufferId());
+        packetOutMessage.setBufferId(OFPacketOut.BUFFER_ID_NONE);
+        packetOutMessage.setInPort(packetInMessage.getInPort());
+        packetOutMessage.setActionsLength((short) OFActionOutput.MINIMUM_LENGTH);
+        packetOutLength += OFActionOutput.MINIMUM_LENGTH;
+        
+        // set actions
+        List<OFAction> actions = new ArrayList<OFAction>(1);      
+
+        actions.add(new OFActionOutput(egressPort, (short) 0));
+        //actions.add(new OFActionOutput(egressPort, (short) 0xFFFF));
+        //actions.add(new OFActionOutput(p.first_port, (short) 0));
+        //actions.add(new OFActionOutput(OFPort.OFPP_CONTROLLER.getValue(), (short) 0xFFFF));
+        packetOutMessage.setActions(actions);
+
+        //set data - only if buffer_id == -1
+        //if (packetInMessage.getBufferId() == OFPacketOut.BUFFER_ID_NONE) {
+        //    byte[] packetData = packetInMessage.getPacketData();
+        //    packetOutMessage.setPacketData(packetData); 
+        //    packetOutLength += (short) packetData.length;
+        ////packetOutMessage.setPacketData(eth_packet.serialize());
+        ////packetOutLength += (short) eth_packet.serialize().length;
+        //// finally, set the total length
+        //packetOutMessage.setLength(packetOutLength);              
+
+        //OFMatch matchtemp = new OFMatch();
+        //matchtemp.loadFromPacket(packetOutMessage.getPacketData(), packetInMessage.getInPort());
+        //log.info("[OFMATCH PROTOCOL]" + matchtemp.getNetworkProtocol());
+        //} else {
+        //    // finally, set the total length
+        //    packetOutMessage.setLength(packetOutLength);              
+        //}
+
+        packetOutMessage.setPacketData(eth_packet.serialize());
+        packetOutLength += (short) eth_packet.serialize().length;
+        // finally, set the total length
+        packetOutMessage.setLength(packetOutLength);              
+
+        OFMatch matchtemp = new OFMatch();
+        matchtemp.loadFromPacket(packetOutMessage.getPacketData(), packetInMessage.getInPort());
+        log.info("[OFMATCH PROTOCOL]" + matchtemp.getNetworkProtocol());
+        
+        
+
+
+            
+        // and write it out
+        try {
+            log.info("[sending message]writting ");
+            sw.write(packetOutMessage, null);
+        } catch (IOException e) {
+            log.error("Failed to write {} to switch {}: {}", new Object[] { packetOutMessage, sw, e });
+        }
     }
 
     /**
@@ -494,16 +682,18 @@ public class Hw1Switch
         if (log.isTraceEnabled()) {
             log.trace("{} flow entry removed {}", sw, flowRemovedMessage);
         }
+        
+        
 
         // CS6998: Do works here to implement super firewall
         //  Hint: You may detect Elephant Flow here.
-        //Long byteCount = flowRemovedMessage.getByteCount();
-        //Integer durationInSec = flowRemovedMessage.getDurationSeconds();
-        //Double bandwidth = (double) byteCount/durationInSec;
-        //if (bandwidth > ELEPHANT_FLOW_BAND_WIDTH)
-        //    addElephantFlow(sw, sourceMac, destMac);
-
-        //checkElephantFlowLimit(sw);
+//        Long byteCount = flowRemovedMessage.getByteCount();
+//        Integer durationInSec = flowRemovedMessage.getDurationSeconds();
+//        Double bandwidth = (double) byteCount/durationInSec;
+//        if (bandwidth > ELEPHANT_FLOW_BAND_WIDTH)
+//            addElephantFlow(sw, sourceMac, destMac);
+//
+//        checkElephantFlowLimit(sw);
         
         return Command.CONTINUE;
     }

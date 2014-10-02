@@ -284,13 +284,6 @@ public class Monitoring implements IFloodlightModule, IOFMessageListener {
 	}
 
 	@Override
-	public net.floodlightcontroller.core.IListener.Command receive(
-			IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
-		// TODO Auto-generated method stub
-		return null;
-	}
-
-	@Override
 	public Collection<Class<? extends IFloodlightService>> getModuleServices() {
 		// TODO Auto-generated method stub
 		return null;
@@ -307,6 +300,37 @@ public class Monitoring implements IFloodlightModule, IOFMessageListener {
 		// TODO Auto-generated method stub
 		return null;
 	}
+
+    @Override
+    public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
+        switch (msg.getType()) {
+            case PACKET_IN:
+                return this.processPacketInMessage(sw, (OFPacketIn) msg, cntx);
+            //case FLOW_REMOVED:
+            //    return this.processFlowRemovedMessage(sw, (OFFlowRemoved) msg);
+            case ERROR:
+                log.info("received an error {} from switch {}", (OFError) msg, sw);
+                return Command.CONTINUE;
+            default:
+                break;
+        }
+        log.error("received an unexpected message {} from switch {}", msg, sw);
+        return Command.CONTINUE;
+    }
+
+    /**
+     * Processes a OFPacketIn message. If the switch has learned the MAC to port mapping
+     * for the pair it will write a FlowMod for. If the mapping has not been learned the 
+     * we will flood the packet.
+     * @param sw
+     * @param pi
+     * @param cntx
+     * @return
+     */
+    private Command processPacketInMessage(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
+        log.info("niubi");
+        return Command.CONTINUE;
+    }
 
 	@Override
 	public void init(FloodlightModuleContext context)
