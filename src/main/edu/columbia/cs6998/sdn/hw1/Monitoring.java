@@ -33,6 +33,7 @@ package edu.columbia.cs6998.sdn.hw1;
 
 import java.util.Timer;
 import java.util.TimerTask;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -77,9 +78,26 @@ import org.openflow.util.LRULinkedHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+// our project (older version of floodlight)
+import org.codehaus.jackson.JsonFactory;
+import org.codehaus.jackson.JsonParseException;
+import org.codehaus.jackson.JsonParser;
+import org.codehaus.jackson.JsonToken;
+import org.codehaus.jackson.map.ObjectMapper;
+
+// Eclipse (new version of floodlight)
+//import com.fasterxml.jackson.core.JsonFactory;
+//import com.fasterxml.jackson.core.JsonParseException;
+//import com.fasterxml.jackson.core.JsonParser;
+//import com.fasterxml.jackson.core.JsonToken;
+//import com.fasterxml.jackson.databind.JsonMappingException;
+//import com.fasterxml.jackson.databind.ObjectMapper;
+
 public class Monitoring 
     implements IFloodlightModule, IOFMessageListener {
 	ThreadPool tp;
+	
+
 	
     protected static Logger log = LoggerFactory.getLogger(Monitoring.class);
     
@@ -142,10 +160,9 @@ public class Monitoring
     	public synchronized Boolean checkIfThroughputReady() {
     		// check if the throuput is ready on both first sw and last sw
     		if (this.lastSwThroughput > 0 && this.firstSwThroughput > 0) {
-                log.info("=================================================================");
-            	log.info("firstSwitch=" + this.getFirstSwitch() + " lastSwitch=" + this.getLastSwitch() +
-                		"\nthroughput on firstSw=" + this.firstSwThroughput + ", on lastSw=" + this.lastSwThroughput + " byte/s" + ", packetLoss=" + (1 - this.lastSwThroughput / this.firstSwThroughput));
-                log.info("=================================================================");
+            	//log.info("firstSwitch=" + this.getFirstSwitch() + " lastSwitch=" + this.getLastSwitch() +
+                //		"\nthroughput on firstSw=" + this.firstSwThroughput + ", on lastSw=" + this.lastSwThroughput + " byte/s" + ", packetLoss=" + (1 - this.lastSwThroughput / this.firstSwThroughput));
+            	jsonWriter(this.getFirstSwitch(), this.getLastSwitch(), this.firstSwThroughput, this.lastSwThroughput);
             	return true;
             }
     		return false;
@@ -193,6 +210,24 @@ public class Monitoring
         }
     }
     protected Map<Long, Map<Long, Path>> pathMap; // [srcMac, destMac] => [first switch dpid, Map(prev->next)]
+    
+    
+	ObjectMapper mapper = new ObjectMapper(); // can reuse, share globally
+	//User user = mapper.readValue(new File("user.json"), User.class);
+	public void jsonWriter(Long firstSw, Long lastSw, Double firstSwThroughput, Double lastSwThroughput) { 	
+        log.info("=================================================================");
+        Map<String,Object> userData = new HashMap<String,Object>();
+        userData.put("from", firstSw);
+        userData.put("to", lastSw);
+        userData.put("throughput", lastSwThroughput);
+        userData.put("loss", 1-lastSwThroughput/firstSwThroughput);
+        try {
+            mapper.writeValue(new File("monitoringResult.json"), userData);
+        } catch (Exception e) {
+        }
+        System.out.print(userData);
+        log.info("=================================================================");
+	}
     /**
      * @param floodlightProvider the floodlightProvider to set
      */

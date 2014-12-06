@@ -27,6 +27,7 @@
     </target>
 
     <target name="compile" depends="" description="Compile the .java source file">
+        <delete dir="${build}" />
         <mkdir dir="${build}" />
         <mkdir dir="${build}/META-INF" />
 	    <copy todir="${build}/META-INF">
