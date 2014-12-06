@@ -101,8 +101,8 @@ public class Monitoring
     public static final long HW1_SWITCH_COOKIE = (long) (HW1_SWITCH_APP_ID & ((1 << APP_ID_BITS) - 1)) << APP_ID_SHIFT;
     
     // more flow-mod defaults 
-    protected static final short IDLE_TIMEOUT_DEFAULT = 10;
-    protected static final short HARD_TIMEOUT_DEFAULT = 100;
+    protected static final short IDLE_TIMEOUT_DEFAULT = 5; //10;
+    protected static final short HARD_TIMEOUT_DEFAULT = 5;
     protected static final short PRIORITY_DEFAULT = 100;
     
     // for managing our map sizes
@@ -120,6 +120,79 @@ public class Monitoring
     protected Map<Long, Map<Long, Map<Long, Map<Long, Boolean>>>> packetLossMap;
     protected Map<Long, Map<Long, Long>> delayMap;
     
+    class Path {
+    	private Long firstSwitch;
+    	private Long lastSwitch;
+    	private Map<Long, Set<Long>> linkMap; // switch srcDpid=>destDpid
+    	public double firstSwThroughput;
+    	public double lastSwThroughput;
+    	public Path(Long firstSwitch) {
+    		this.linkMap = new ConcurrentHashMap<Long, Set<Long>>();
+    		this.firstSwitch = firstSwitch;
+    		this.firstSwThroughput = -1.0;
+    		this.lastSwThroughput = -1.0;
+    	}
+    	public Path() {
+    		this.linkMap = new ConcurrentHashMap<Long, Set<Long>>();
+    		this.firstSwitch = -1L;
+    		this.firstSwThroughput = -1.0;
+    		this.lastSwThroughput = -1.0;
+    	}
+    	// destSet = destinationMap.get(sourceMac);
+    	public synchronized Boolean checkIfThroughputReady() {
+    		// check if the throuput is ready on both first sw and last sw
+    		if (this.lastSwThroughput > 0 && this.firstSwThroughput > 0) {
+                log.info("=================================================================");
+            	log.info("firstSwitch=" + this.getFirstSwitch() + " lastSwitch=" + this.getLastSwitch() +
+                		"\nthroughput on firstSw=" + this.firstSwThroughput + ", on lastSw=" + this.lastSwThroughput + " byte/s" + ", packetLoss=" + (1 - this.lastSwThroughput / this.firstSwThroughput));
+                log.info("=================================================================");
+            	return true;
+            }
+    		return false;
+    	}
+        
+    	public synchronized void setFirstSwitch(Long dpid) {
+    		this.firstSwitch = dpid;
+    	}
+    	public synchronized Long getFirstSwitch() {
+    		return firstSwitch;
+    	}
+    	public synchronized void setLastSwitch(Long dpid) {
+    		this.lastSwitch = dpid;
+    	}
+    	public synchronized Long getLastSwitch() {
+    		return lastSwitch;
+    	}
+    	public synchronized void addLink(Long srcDpid, Long destDpid) {
+    		//add a switch link
+    		Set<Long> destSet = linkMap.get(srcDpid);
+            if (destSet == null) {
+                // May be accessed by REST API so we need to make it thread safe
+                destSet = Collections.synchronizedSet(new HashSet<Long>());
+                linkMap.put(srcDpid, destSet);
+            }
+            // add the destMac
+            destSet.add(destDpid);
+    	}
+    	public synchronized Boolean isASrcSwitch(Long dpid) {
+    		//log.info("[isASrcSwitch]");
+    		//for (Long srcDpid : linkMap.keySet()) {
+    		//	log.info("srcSwitch=" + srcDpid);
+    		//}
+    		return linkMap.containsKey(dpid);
+    	}
+    }
+    synchronized protected void tryAddPath(Long sourceMac, Long destMac) {
+    	// check if a srcMac->DestMac entry doesn't exist, create one
+    	if (pathMap.get(sourceMac) == null) {
+        	pathMap.put(sourceMac, new ConcurrentHashMap<Long, Path>());
+        }
+        if (pathMap.get(sourceMac).get(destMac) == null) {
+        	pathMap.get(sourceMac).put(destMac, new Path());
+        	log.info("[AddPath]srcMac:" + sourceMac + " destMac:" + destMac);
+        }
+    }
+    protected Map<Long, Map<Long, Path>> pathMap; // [srcMac, destMac] => [first switch dpid, Map(prev->next)]
     /**
      * @param floodlightProvider the floodlightProvider to set
      */
@@ -145,6 +218,9 @@ public class Monitoring
             // May be accessed by REST API so we need to make it thread safe
             swMap = Collections.synchronizedMap(new LRULinkedHashMap<Long, Short>(MAX_MACS_PER_SWITCH));
             macToSwitchPortMap.put(sw, swMap);
+        }
+        if (swMap.get(mac) == null) {
+            log.info("[addToPortMap] sw:" + sw.getId() + ", mac:" + mac + "->port:" + portVal);
         }
         swMap.put(mac, portVal);
     }
@@ -322,12 +398,14 @@ public class Monitoring
         Long sourceMac = Ethernet.toLong(match.getDataLayerSource());
         Long destMac = Ethernet.toLong(match.getDataLayerDestination());
 
-        if (sourceMac > 100 || destMac > 100) {
+        //if (sourceMac > 100 || destMac > 100) {
+        if ((sourceMac > 100 && destMac > 100) ||
+            (match.getNetworkProtocol() != (byte)0xfd && match.getNetworkProtocol() != 1)) {
             // CS6998: Assume we only deal with mac <= 100. For >100 part, flood it
             this.writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
             return Command.CONTINUE;
         }
-        //System.out.println("processPacketInMessage: sourceMac:" + sourceMac + ", destMac:" + destMac);
+        System.out.println("[PacketIn]sw:" + sw.getId() + " sourceMac:" + sourceMac + ", destMac:" + destMac + ", protocol:" + match.getNetworkProtocol());
         addToPortMap(sw, sourceMac, match.getInputPort());
         addToDestinationMap(sourceMac, destMac);
 
@@ -340,9 +418,10 @@ public class Monitoring
             if (outPort == null) {
                 // If we haven't learned the port for the dest MAC, flood it
                 // CS6998: Fill out the following ????
+                log.info("[PacketIn] Flood");
                 this.writePacketOutForPacketIn(sw, pi, OFPort.OFPP_FLOOD.getValue());
             } else if (outPort == match.getInputPort()) {
-                log.trace("ignoring packet that arrived on same port as learned destination:"
+                log.info("ignoring packet that arrived on same port as learned destination:"
                         + " switch {} dest MAC {} port {}",
                         new Object[]{ sw, HexString.toHexString(destMac), outPort });
             } else {
@@ -392,6 +471,16 @@ public class Monitoring
                     IPv4 ipPacket = genIpPacket(sw, match, id, i);
                     writePacketOut(sw, ipPacket, outPort, match.getDataLayerSource(), match.getDataLayerDestination(), pi);
                 }
+                //tryAddPath(sourceMac, destMac);
+                //Path p = pathMap.get(sourceMac).get(destMac);
+                //p.setFirstSwitch(sw.getId());
+                if (pathMap.get(sourceMac) == null) {
+                    pathMap.put(sourceMac, new ConcurrentHashMap<Long, Path>());
+                }
+                if (pathMap.get(sourceMac).get(destMac) == null) {
+                    pathMap.get(sourceMac).put(destMac, new Path(sw.getId()));
+                    log.info("[PacketIn] add path from srcMac:" + sourceMac + "to destMac:" + destMac);
+                }
             }
         } else {
             //log.info("===================OWN PACKET==================");
@@ -413,6 +502,13 @@ public class Monitoring
                 long time = ByteBuffer.wrap(timeLoad).getLong();
                 long id = ByteBuffer.wrap(idLoad).getLong();
                 long count = ByteBuffer.wrap(countLoad).getLong();
+
+                assert(pathMap.get(sourceMac) != null && pathMap.get(sourceMac).get(destMac) != null);
+                Path p = pathMap.get(sourceMac).get(destMac);
+                p.addLink(dpid, sw.getId());
+                log.info("[PacketIn, own] add link \n" +
+                		"srcMac:" + sourceMac + " destMac:" + destMac + "\n" +
+                		"prevSw:" + dpid + " currSw:" + sw.getId());
                 
                 if (delayMap.get(sw.getId()) == null) delayMap.put(sw.getId(), new ConcurrentHashMap<Long, Long>());
                 if (delayMap.get(sw.getId()).get(dpid) == null) delayMap.get(sw.getId()).put(dpid, 0L);
@@ -595,6 +691,40 @@ public class Monitoring
         Long sourceMac = Ethernet.toLong(flowRemovedMessage.getMatch().getDataLayerSource());
         Long destMac = Ethernet.toLong(flowRemovedMessage.getMatch().getDataLayerDestination());
 
+        log.info("[FlowRemoved] on sw:" + sw.getId() + ", srcMac=" + sourceMac + " destMac=" + destMac);
+        // check the throughput
+        assert(pathMap.get(sourceMac) != null && pathMap.get(sourceMac).get(destMac) != null);
+
+        if (pathMap.get(sourceMac) != null && pathMap.get(sourceMac).get(destMac) != null) {
+        	Long byteCount = flowRemovedMessage.getByteCount();
+            Integer durationInSec = flowRemovedMessage.getDurationSeconds();
+            Double bandwidth = ((double)byteCount) / ((double)durationInSec);
+            
+            Path p = pathMap.get(sourceMac).get(destMac);
+            Boolean throughputReady = false;
+            if (!p.isASrcSwitch(sw.getId())) {
+                // current sw is never a src sw for the path, thus it's the final switch
+                // check for throughput
+            	p.setLastSwitch(sw.getId());
+                p.lastSwThroughput = bandwidth;
+                throughputReady = p.checkIfThroughputReady();
+
+            } else if (p.getFirstSwitch() == sw.getId()) {
+            	p.firstSwThroughput = bandwidth;
+                throughputReady = p.checkIfThroughputReady();
+            }
+            
+
+            //// clear the path in the map
+            // TODO: when? the order of flowremoved for different sw is undetermined
+            if (throughputReady) {
+                pathMap.get(sourceMac).remove(destMac);
+                if (pathMap.get(sourceMac).isEmpty()) {
+                        pathMap.remove(sourceMac);
+                }
+            }
+        }
+
         if (log.isTraceEnabled()) {
             log.trace("{} flow entry removed {}", sw, flowRemovedMessage);
         }
@@ -680,6 +810,8 @@ public class Monitoring
                 new ConcurrentHashMap<Long, Map<Long, Map<Long, Map<Long, Boolean>>>>();
         delayMap = 
         		new ConcurrentHashMap<Long, Map<Long, Long>>();
+        pathMap =
+        		new ConcurrentHashMap<Long, Map<Long, Path>>();
     }
 
     @Override
